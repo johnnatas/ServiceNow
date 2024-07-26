@@ -1,0 +1,152 @@
+**API:**
+
+**Dados para acesso a integração de QA:**
+
+
+é necessário informar nos Headers: 
+
+Content-type: application/json 
+
+X-CSRF-Token: [informar o Token] - para pegar o token, realizar um GET e passar nesse header o valor “fetch”
+
+Accept: application/json
+
+
+**Criação de Requisição de Compra:**
+
+https://my303734-api.s4hana.ondemand.com/sap/opu/odata4/sap/api_purchaserequisition_2/srvd_a2x/sap/purchaserequisition/0001/PurchaseReqn
+
+Queries:
+[GET]
+
+$expand: _PurchaseRequisitionItem
+
+$filter: PurchaseRequisition eq '10005257’
+
+[POST]
+
+sap-language: PT
+
+JSON de exmplo:
+
+{
+"PurchaseRequisitionType": "NB",
+"SourceDetermination": false,
+"PurReqnDoOnlyValidation": false,
+"PurReqnHeaderNote": "As informações aqui informadas farão parte do texto de cabeçalho da requisição",
+"PurReqnDescription": "[Oferta de Material/Serviço]",
+"_PurchaseRequisitionItem": [
+{
+"PurchaseRequisitionItem": "10",
+"PurchasingDocumentItem": "10",
+"PurchaseRequisitionItemText": "8523.59.00 - MAQ, APAR E MAT ELETRICOS",
+"AccountAssignmentCategory": "K",
+"Material": "000000000000000175",
+"RequestedQuantity": 1,
+"BaseUnit": "EA",
+"BaseUnitISOCode": "EA",
+"PurchaseRequisitionPrice": 100,
+"PurReqnPriceQuantity": 1,
+"PurchasingGroup": "102",
+"Plant": "1410",
+"Supplier": "",
+"PurReqnItemCurrency": "BRL",
+"DelivDateCategory": "1",
+"ConsumptionPosting": "V",
+"PurReqnOrigin": "R",
+"Language": "PT",
+"ProductTypeCode": "1",
+"PerformancePeriodStartDate": "2024-01-15",
+"PerformancePeriodEndDate": "2024-01-18",
+"GoodsReceiptIsExpected": true,
+"InvoiceIsExpected": true,
+"GoodsReceiptIsNonValuated": false,
+"PurchaseRequisitionIsFixed": false,
+"_PurchaseReqnAcctAssgmt": [
+{
+"PurchaseRequisitionItem": "10",
+"PurchaseReqnAcctAssgmtNumber": "1",
+"CostCenter": "C49161",
+"Quantity": 1,
+"BaseUnit": "EA",
+"BaseUnitISOCode": "EA",
+"GLAccount": "61414002"
+}
+]
+}
+]
+}
+
+
+**Criação de Pedido de Compra:**
+
+https://my303734-api.s4hana.ondemand.com/sap/opu/odata/sap/API_PURCHASEORDER_PROCESS_SRV/A_PurchaseOrder
+
+Queries:
+[GET]
+
+$expand: to_PurchaseOrderItem
+
+$filter: PurchaseOrder eq '4500001936’
+
+
+[POST]
+
+sap-language: PT
+
+JSON de exemplo:
+
+{
+"CompanyCode": "1410",
+"PurchaseOrderType": "NB",
+"DocumentCurrency": "BRL",
+"Supplier": "1000021",
+"PaymentTerms": "",
+"PurchasingOrganization": "1410",
+"PurchasingGroup": "002",
+"to_PurchaseOrderItem": [
+{
+"PurchaseOrderItem": "10",
+"PurchaseOrderItemText": "8523.59.00 - MAQ, APAR E MAT ELETRICOS",
+"Plant": "1410",
+"OrderQuantity": "1",
+"PurchaseOrderQuantityUnit": "CDA",
+"OrderPriceUnit": "CDA",
+"NetPriceAmount": "100.00",
+"NetPriceQuantity": "1",
+"TaxCode": "00",
+"AccountAssignmentCategory": "K",
+"GoodsReceiptIsExpected": false,
+"InvoiceIsGoodsReceiptBased": false,
+"PurchaseRequisition": "10005219",
+"PurchaseRequisitionItem": "10",
+"Material": "175",
+"ProductType": "1",
+"TaxJurisdiction": "SP 3550308",
+"to_AccountAssignment": [
+{
+"PurchaseOrderItem": "10",
+"Quantity": "1",
+"GLAccount": "61414002",
+"CostCenter": "C49161"
+}
+],
+"to_PurchaseOrderPricingElement": [
+{
+"PurchaseOrderItem": "10",
+"ConditionType": "PMP0",
+"ConditionRateValue": "100.00",
+"ConditionQuantityUnit": "CDA",
+"ConditionQuantity": "1"
+}
+]
+}
+],
+"to_PurchaseOrderNote": [
+{
+"TextObjectType": "F01",
+"Language": "PT",
+"PlainLongText": "[Oferta de Material/Serviço]"
+}
+]
+}
