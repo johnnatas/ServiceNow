@@ -1,0 +1,48 @@
+(function executeRule(current, previous /*null when async*/) {
+
+	var data = {};
+
+	data.cscTask = current.getUniqueValue();
+	data.parent = current.parent + '';
+	data.description = current.parent.variables.descricao;
+	data.shortDescription = current.parent.short_description;
+	data.servicos = current.parent.variables.servicos + '';
+	data.materiais = current.parent.variables.materiais + '';
+	data.purchaseType = current.parent.variables.tipo_de_compra;
+	data.acquisition = current.parent.variables.question_aquisicao_material_servico;
+	data.contractNumber = current.parent.variables.numero_contrato;
+	data.supplier = current.business_partner_tax_number.supplier;
+	data.requester = current.parent.variables.question_name.getDisplayValue();
+	data.newValue = current.parent.variables.novo_valor;
+	data.otherAdjustments = current.parent.variables.outros_ajustes;
+	data.vendorContractNumber = current.parent.variables.numero_contrato_fornecedor;
+	data.deliveryDate = current.parent.variables.data_da_entrega;
+	data.dueDate = current.parent.due_date.getDisplayValue();
+	data.startDate = current.parent.opened_at.getDisplayValue();
+	data.paymentCondition = current.parent.variables.condicao_de_pagamento;
+	data.localBilling = current.parent.variables.local_de_faturamento;
+	data.serviceMaterialNumber = current.parent.variables.numero_material_servico;
+
+	if(current.parent.variables.question_requested_for_is_true == 'true') {
+		data.requester = current.parent.variables.question_requested_for;
+	}
+
+	if(current.parent.variables.question_data_da_vigencia_do_contrato) {
+		data.dataVigenciaContrato = current.parent.variables.data_de_vigencia_do_contrato;
+	}
+
+	if(current.parent.short_description != "[Oferta de Regularização]") {
+		var grNegociacao = new GlideRecord('x_grul_csc_ultra_csc_catalog_task');
+		grNegociacao.addQuery('parent', current.parent);
+		grNegociacao.addQuery('short_description', '[ Negociação ]');
+		grNegociacao.query();
+		if(grNegociacao.next()) {
+			data.paymentCondition = grNegociacao.condicoes_de_pagamento.label;
+			data.supplier = grNegociacao.business_partner_tax_number.supplier;
+			data.description = grNegociacao.descricao_adicional;
+		}
+	}
+
+	new x_grul_csc_ultra.CSCUltra_SAPIntegration().setPurchaseRequest(data);
+
+})(current, previous);
