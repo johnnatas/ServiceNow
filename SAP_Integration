@@ -1,0 +1,692 @@
+var CSCUltra_SAPIntegration = Class.create();
+CSCUltra_SAPIntegration.prototype = {
+	initialize: function () {
+	},
+
+	/**
+	 * 
+	 * Public Methods
+	 * 
+	 */
+
+	getMaterials: function (skip) {
+		try {
+			var r = new sn_ws.RESTMessageV2('x_grul_csc_ultra.CSC_Materials', 'getMaterials');
+			r.setStringParameterNoEscape('skip', skip);
+			var response = r.execute();
+			var responseBody = response.getBody();
+			var httpStatus = response.getStatusCode();
+
+			if (httpStatus == 200) {
+				var product = JSON.parse(responseBody).d.results;
+				var qt = JSON.parse(responseBody).d.__count;
+				gs.info('Certsys: CSC_Materials responseBody: ' + responseBody);
+
+				return { 'product': product, 'qt': qt };
+			} else {
+				gs.info('Certsys: CSC_Materials httpStatus: ' + httpStatus + responseBody);
+				return undefined;
+			}
+
+		} catch (ex) {
+			var message = ex.message;
+			gs.info('Certsys: CSC_Materials error: ' + message);
+		}
+	},
+
+	getApprovalState: function (data) {
+		var grCSCTask = new GlideRecord('x_grul_csc_ultra_csc_catalog_task');
+		grCSCTask.addEncodedQuery(data.query);
+		grCSCTask.query();
+
+		while (grCSCTask.next()) {
+			var filter, logError, workNotesError, workNotes, workNotesNotApproved = '';
+
+			if (data.task_type == 'requisition') {
+				var purchaseRequest = grCSCTask.getValue('purchase_request');
+				filter = "PurchaseRequisition eq '" + purchaseRequest + "'";
+				logError = 'CSCUltra_SAPIntegration - Purchase Requisition Update State error: ';
+				workNotesError = 'Houve um erro ao tentar atualizar o status da Requisição no SAP:\n';
+				workNotes = "Requisição de Compra número: " + purchaseRequest + ", foi aprovado.";
+				workNotesNotApproved = "Requisição de Compra número: " + purchaseRequest + ", ainda não foi aprovada.";
+			} else {
+				var purchaseOrder = grCSCTask.getValue('purchase_order');
+				filter = "PurchaseOrder eq '" + purchaseOrder + "'";
+				logError = 'CSCUltra_SAPIntegration - Purchase Order Update State error: ';
+				workNoteserror = 'Houve um erro ao tentar atualizar o status da Requisição no SAP:\n';
+				workNotes = "Pedido de Compra número: " + purchaseOrder + ", foi aprovado.";
+				workNotesNotApproved = "Pedido de Compra número: " + purchaseOrder + ",  ainda não foi aprovado.";
+			}
+
+			try {
+				var r = new sn_ws.RESTMessageV2(data.rest_message, data.rest_method);
+				r.setStringParameterNoEscape('filter', filter);
+
+				var response = r.execute();
+				var responseBody = response.getBody();
+				var httpStatus = response.getStatusCode();
+
+				if (httpStatus == 200 || httpStatus == 201) {
+					isApproved = false;
+
+					if (data.task_type == 'requisition') {
+						var purchaseReqItems = JSON.parse(responseBody).value[0]._PurchaseRequisitionItem;
+						if (purchaseReqItems[0].PurReqnReleaseStatus == "05") isApproved = true;
+					} else {
+						var purchaseOrderStatus = JSON.parse(responseBody).d.results[0].PurchasingProcessingStatus;
+						if (purchaseOrderStatus == "05") isApproved = true;
+					}
+
+					if (isApproved) {
+						grCSCTask.setValue('state', 3);
+						grCSCTask.work_notes = workNotes;
+
+						// Comentário para informar ao usuário o status de aprovação 
+						var grCSCReq = new GlideRecord('x_grul_csc_ultra_request');
+						if (grCSCReq.get(grCSCTask.parent)) {
+							grCSCReq.comments = workNotes;
+							grCSCReq.update();
+						}
+
+					} else {
+						grCSCTask.work_notes = workNotesNotApproved;
+					}
+
+					grCSCTask.update();
+
+				} else {
+					if (data.task_type == "requisition") {
+						gs.info(logError + JSON.parse(responseBody).error.message);
+						grCSCTask.work_notes = workNotesError + + JSON.parse(responseBody).error.message + '\n\nPor favor, contate o suporte.';
+					} else {
+						gs.info(logError + + JSON.parse(responseBody).error.message.value);
+						grCSCTask.work_notes = workNotesError + JSON.parse(responseBody).error.message.value + '\n\nPor favor, contate o suporte.';
+					}
+					grCSCTask.update();
+				}
+
+			} catch (e) {
+				gs.info('CSCUltra_SAPIntegration - getApprovalState error: ' + e.message);
+			}
+		}
+
+	},
+
+	insertBusinessPartner: function (businessPartnerData) {
+		var bpName = businessPartnerData.BusinessPartnerName;
+		var bpTaxNumber = businessPartnerData.to_BusinessPartnerTax.results;
+		var bpSupplier = businessPartnerData.Supplier;
+
+		if (bpTaxNumber.length > 0) {
+			bpTaxNumber = bpTaxNumber[0].BPTaxNumber;
+		} else {
+			bpTaxNumber = '';
+		}
+
+		if (bpSupplier != "") {
+			var grCSCBP = new GlideRecord('x_grul_csc_ultra_csc_business_partner');
+			grCSCBP.addQuery('cnpj_cpf', bpTaxNumber);
+			grCSCBP.addQuery('corporate_reason', bpName);
+			grCSCBP.addQuery('supplier', bpSupplier);
+			grCSCBP.query();
+
+			if (!grCSCBP.next()) {
+				grCSCBP.initialize();
+				grCSCBP.setValue('cnpj_cpf', bpTaxNumber);
+				grCSCBP.setValue('corporate_reason', bpName);
+				grCSCBP.setValue('supplier', bpSupplier);
+				grCSCBP.insert();
+			}
+		}
+	},
+
+	setPurchaseRequest: function (data) {
+
+		// Condição feita para tratar limite de caracteres para envio ao SAP
+		if (data.shortDescription == "[Aquisição Aditivos, Adendos e Reajustes]") {
+			data.shortDescription += '';
+			data.shortDescription = data.shortDescription.replace("Aquisição ", "");
+		}
+
+		var body = {
+			"PurchaseRequisitionType": "NB",
+			"SourceDetermination": false,
+			"PurReqnDoOnlyValidation": false,
+			"PurReqnHeaderNote": data.description + '',
+			"PurReqnDescription": data.shortDescription + ''
+		};
+
+		var parseItems = this._parseItems(data);
+		body._PurchaseRequisitionItem = this._mountResult(parseItems);
+
+		gs.info('CSCUltra_SAPIntegration setPurchaseRequest body: ' + JSON.stringify(body));
+
+		var getToken = this._getToken('x_grul_csc_ultra.CSC_PurchaseRequisition', 'getPurchaseRequisition');
+
+		var restData = {
+			rest_name: 'x_grul_csc_ultra.CSC_PurchaseRequisition',
+			rest_method: 'createPurchaseRequisition',
+			body: body,
+			cookie: getToken.cookie,
+			token: getToken.token
+		};
+
+		var integrationData = this._sendDataToSAP(restData);
+
+		var grCSCTask = new GlideRecord('x_grul_csc_ultra_csc_catalog_task');
+		if (grCSCTask.get(data.cscTask)) {
+			if (integrationData.status == 200 || integrationData.status == 201) {
+				var purchaseReqNumber = integrationData.body.PurchaseRequisition;
+
+				grCSCTask.setValue('purchase_request', purchaseReqNumber);
+				grCSCTask.setValue('state', 3);
+				grCSCTask.work_notes = 'Requisição de Compra número: ' + purchaseReqNumber + ', foi criado.';
+				grCSCTask.update();
+
+				// Comentário para informar o usuário que abriu a requisição
+				var grCSCReq = new GlideRecord('x_grul_csc_ultra_request');
+				if (grCSCReq.get(grCSCTask.parent)) {
+					grCSCReq.comments = 'Requisição de Compra número: ' + purchaseReqNumber + ', foi criado.';
+					grCSCReq.update();
+				}
+
+				data.cookie = getToken.cookie;
+				data.token = getToken.token;
+				data.bus = 'BUS2105'; // Código para anexo em Requisição de Compra
+				data.object_key = "00" + purchaseReqNumber;
+
+				this.sendAttachment(data);
+
+			} else {
+				var errorList = integrationData.body.error.details != undefined ? this._getErrorList(integrationData.body.error.details) : 'Não há maiores detalhes do erro\n';
+
+				grCSCTask.setValue('state', -44);
+				grCSCTask.work_notes = "Houve um erro ao enviar a requisição para o SAP:\n" + integrationData.body.error.message + "\n\nDetalhamento do erro:\n\n" + errorList + "\nPor favor, revise o item ou contate o suporte.";
+				grCSCTask.update();
+			}
+		}
+	},
+
+	sendAttachment: function (data) {
+		var tableSysId = data.parent + '';
+
+		gs.info('CSCUltra_SAPIntegration sendAttachment data: ' + JSON.stringify(data));
+
+		var grAttch = new GlideRecord('sys_attachment');
+		grAttch.addQuery("table_sys_id", tableSysId);
+		grAttch.query();
+
+		if (grAttch.hasNext()) {
+			while (grAttch.next()) {
+				var contentType = grAttch.getValue('content_type');
+				var fileName = grAttch.getValue('file_name');
+				var attchId = grAttch.getUniqueValue();
+
+				try {
+					var r = new sn_ws.RESTMessageV2('x_grul_csc_ultra.CSC_PurchaseAttachment', 'sendAttachment');
+					r.setStringParameterNoEscape('cookie', data.cookie);
+					r.setStringParameterNoEscape('token', data.token);
+					r.setStringParameterNoEscape('sap_object_key', data.object_key);
+					r.setStringParameterNoEscape('bus', data.bus);
+					r.setStringParameterNoEscape('file_name', fileName);
+					r.setStringParameterNoEscape('content_type', contentType);
+					r.setRequestBodyFromAttachment(attchId);
+
+					var response = r.execute();
+					var responseBody = response.getBody();
+					var httpStatus = response.getStatusCode();
+
+					gs.info('CSCUltra_SAPIntegration _sendPurchaseRequisitionAttachment httpStatus: ' + httpStatus);
+
+					if (httpStatus == 200 || httpStatus == 201) {
+						gs.info('CSCUltra_SAPIntegration _sendPurchaseRequisitionAttachment sent file: ' + fileName);
+					} else {
+						var grCSCTask = new GlideRecord('x_grul_csc_ultra_csc_catalog_task');
+						grCSCTask.get(data.cscTask);
+						grCSCTask.work_notes = "Houve um erro ao enviar o anexo para a requisição no SAP:\n" + JSON.parse(responseBody).message.value + "\n\nPor favor, contate o suporte.";
+						grCSCTask.update();
+
+						gs.info('CSCUltra_SAPIntegration _sendPurchaseRequisitionAttachment responseBody: ' + responseBody);
+					}
+				}
+				catch (ex) {
+					var message = ex.message;
+					gs.info('CSCUltra_SAPIntegration sendAttachment error: ' + message);
+				}
+			}
+		}
+	},
+
+	setPurchaseOrder: function (data) {
+		var body = {};
+
+		data.shortDescription += '';
+
+		// Condição feita para tratar limite de caracteres
+		if (data.shortDescription == "[Aquisição Aditivos, Adendos e Reajustes]") {
+			data.shortDescription = data.shortDescription.replace("Aquisição ", "");
+		}
+
+		var sapCode = '1410';
+
+		if (data.sapCompanyCode != undefined && data.sapCompanyCode != '') {
+			sapCode = data.sapCompanyCode;
+		}
+
+		body.CompanyCode = sapCode;
+		body.PurchasingOrganization = sapCode;
+		body.PurchasingGroup = "002";
+		body.PurchaseOrderType = data.purchaseOrderType;
+		body.DocumentCurrency = "BRL";
+		body.Supplier = data.supplier + '';
+		body.PaymentTerms = data.paymentCondition != undefined ? data.paymentCondition + '' : '';
+
+		var parseItems = this._parseItems(data);
+		body.to_PurchaseOrderItem = this._mountResultOrder(parseItems);
+		body.to_PurchaseOrderNote = [
+			{
+				"TextObjectType": "F01",
+				"Language": "PT",
+				"PlainLongText": data.descriao_analista != '' ? data.descriao_analista + '' : data.shortDescription
+			},
+			{
+				"TextObjectType": "F02",
+				"Language": "PT",
+				"PlainLongText": data.description + ''
+			}
+		];
+
+		gs.info('CSCUltra_SAPIntegration setPurchaseOrder body: ' + JSON.stringify(body));
+
+		var getToken = this._getToken('x_grul_csc_ultra.CSC_PurchaseOrder', 'getPurchaseOrder');
+
+		var restData = {
+			rest_name: 'x_grul_csc_ultra.CSC_PurchaseOrder',
+			rest_method: 'createPurchaseOrder',
+			body: body,
+			cookie: getToken.cookie,
+			token: getToken.token
+		};
+
+		var integrationData = this._sendDataToSAP(restData);
+
+		var grCSCTask = new GlideRecord('x_grul_csc_ultra_csc_catalog_task');
+		if (grCSCTask.get(data.cscTask)) {
+			if (integrationData.status == 200 || integrationData.status == 201) {
+				var purchaseOrderNumber = integrationData.body.d.PurchaseOrder;
+
+				grCSCTask.setValue('purchase_order', purchaseOrderNumber);
+				grCSCTask.setValue('state', 3);
+				grCSCTask.work_notes = 'O Pedido de Compra número: ' + purchaseOrderNumber + ', foi criado.';
+				grCSCTask.update();
+
+				// Comentário para informar o usuário que abriu a requisição
+				var grCSCReq = new GlideRecord('x_grul_csc_ultra_request');
+				if (grCSCReq.get(grCSCTask.parent)) {
+					grCSCReq.comments = 'O Pedido de Compra número: ' + purchaseOrderNumber + ', foi criado.';
+					grCSCReq.update();
+				}
+
+				data.cookie = getToken.cookie;
+				data.token = getToken.token;
+				data.bus = 'BUS2012'; // Código para anexo em Pedido de Compra
+				data.object_key = purchaseOrderNumber;
+
+				this.sendAttachment(data);
+
+			} else {
+				var errorList = integrationData.body.error.innererror.errordetails != undefined ? this._getErrorList(integrationData.body.error.innererror.errordetails) : 'Não há maiores detalhes do erro\n';
+
+				grCSCTask.setValue('state', -44);
+				grCSCTask.work_notes = "Houve um erro ao criar um Pedido de Compra no SAP: " + integrationData.body.error.message.value + "\n\nDetalhamento do erro:\n\n" + errorList + "\nPor favor, revise o item ou contate o suporte.";
+				grCSCTask.update();
+			}
+		}
+	},
+
+
+	/**
+	 * 
+	 * Private Methods
+	 * 
+	 */
+
+	_getErrorList: function (list) {
+		var errorList = '';
+
+		if (list != undefined) {
+			for (var i = 0; i < list.length; i++) {
+				if (list[i].severity != "warning") {
+					errorList += "   • " + list[i].message + "\n";
+				}
+			}
+		}
+
+		return errorList;
+	},
+
+	_mountResultOrder: function (obj) {
+
+		var itemsArray = [];
+		var itemNumber = 10;
+
+		for (var i = 0; i < obj.length; i++) {
+			var purchaseOrderItem = {};
+			purchaseOrderItem.PurchaseOrderItem = itemNumber.toString();
+			purchaseOrderItem.PurchaseOrderItemText = this._getMaterialDescription(obj[i].description);
+			purchaseOrderItem.Plant = obj[i].delivery_place;
+			purchaseOrderItem.OrderQuantity = obj[i].quantity;//.replace('.', '').replace(',', '.');
+			purchaseOrderItem.NetPriceAmount = obj[i].price.replace('.', '').replace(',', '.');
+			purchaseOrderItem.NetPriceQuantity = obj[i].quantity;//.replace('.', '').replace(',', '.');
+			purchaseOrderItem.TaxCode = obj[i].tax_code;
+			purchaseOrderItem.AccountAssignmentCategory = obj[i].asset_or_expense == 'ativo_capex' ? 'A' : 'K';
+			purchaseOrderItem.GoodsReceiptIsExpected = obj[i].em;
+			purchaseOrderItem.InvoiceIsGoodsReceiptBased = obj[i].rev_fat_em;
+			purchaseOrderItem.PurchaseRequisition = obj[i].purchase_requisition;
+			purchaseOrderItem.PurchaseRequisitionItem = itemNumber.toString();
+			purchaseOrderItem.Material = obj[i].id_material_servico;
+			purchaseOrderItem.ProductType = obj[i].product_type;
+
+			purchaseOrderItem.to_AccountAssignment = [{}];
+			purchaseOrderItem.to_AccountAssignment[0].PurchaseOrderItem = itemNumber.toString();
+			purchaseOrderItem.to_AccountAssignment[0].Quantity = obj[i].quantity;//.replace('.', '').replace(',', '.');
+			purchaseOrderItem.to_AccountAssignment[0].GLAccount = obj[i].accounting_account.split('-')[0].trim();
+			purchaseOrderItem.to_AccountAssignment[0].CostCenter = obj[i].cost_center.split('-')[0].trim();
+
+			purchaseOrderItem.to_PurchaseOrderPricingElement = [{}];
+			purchaseOrderItem.to_PurchaseOrderPricingElement[0].PurchaseOrderItem = itemNumber.toString();
+			purchaseOrderItem.to_PurchaseOrderPricingElement[0].ConditionType = "PMP0";
+			purchaseOrderItem.to_PurchaseOrderPricingElement[0].ConditionRateValue = obj[i].price.replace('.', '').replace(',', '.');
+			purchaseOrderItem.to_PurchaseOrderPricingElement[0].ConditionQuantity = obj[i].condition_quantity;
+
+
+			itemsArray.push(purchaseOrderItem);
+			gs.info('CSCUltra_SAPIntegration _mountResultOrder itemsArray: ' + JSON.stringify(itemsArray));
+			itemNumber += 10;
+		}
+
+		return itemsArray;
+	},
+
+	_mountResult: function (obj) {
+		var results = [];
+		var itemNumber = 10;
+
+		for (var i = 0; i < obj.length; i++) {
+			var data = {};
+
+			data.PurchaseRequisitionItem = itemNumber.toString();
+			data.PurchasingDocumentItem = itemNumber.toString();
+			data.PurchaseRequisitionItemText = this._getMaterialDescription(obj[i].description);
+			data.AccountAssignmentCategory = obj[i].asset_or_expense == 'ativo_capex' ? 'A' : 'K';
+			data.Material = this._parseMaterial(obj[i].id_material_servico);
+			data.RequestedQuantity = parseFloat(obj[i].quantity);//.replace('.','').replace(',', '.'));
+			data.BaseUnit = "EA";
+			data.BaseUnitISOCode = "EA",
+				data.PurchaseRequisitionPrice = parseFloat(obj[i].price.replace('.', '').replace(',', '.'));
+			data.PurReqnPriceQuantity = parseFloat(obj[i].is_service == true ? "1000" : "1");
+			data.PurchasingGroup = obj[i].gcm_code !== undefined ? obj[i].gcm_code.split('-')[0].trim() : "102";
+			data.Plant = obj[i].delivery_place;
+			data.Supplier = '';
+			data.FixedSupplier = "000" + obj[i].supplier;
+			data.PurReqnItemCurrency = obj[i].currency.toUpperCase();
+			data.DelivDateCategory = "1";
+			data.ConsumptionPosting = "V";
+			data.PurReqnOrigin = "R";
+			data.Language = "PT";
+			data.ProductTypeCode = obj[i].product_type;
+			data.PerformancePeriodStartDate = this._getDate(obj[i].today);
+			data.PerformancePeriodEndDate = this._getDate(obj[i].delivery_date);
+			data.GoodsReceiptIsExpected = true;
+			data.InvoiceIsExpected = true;
+			data.GoodsReceiptIsNonValuated = false;
+			data.PurchaseRequisitionIsFixed = false;
+
+			var resultsPurchaseReqnAcctAssgmt = [];
+			var purchaseReqnAcctAssgmt = {};
+			purchaseReqnAcctAssgmt.PurchaseRequisitionItem = itemNumber.toString();
+			purchaseReqnAcctAssgmt.PurchaseReqnAcctAssgmtNumber = "1";
+			purchaseReqnAcctAssgmt.CostCenter = obj[i].cost_center.split('-')[0].trim();
+			purchaseReqnAcctAssgmt.Quantity = parseFloat(obj[i].quantity);//.replace('.', '').replace(',', '.'));
+			purchaseReqnAcctAssgmt.BaseUnit = "EA";
+			purchaseReqnAcctAssgmt.BaseUnitISOCode = "EA";
+			purchaseReqnAcctAssgmt.GLAccount = obj[i].accounting_account.split('-')[0].trim();
+			purchaseReqnAcctAssgmt.MasterFixedAsset = obj[i].cfi !== undefined ? obj[i].cfi : '';
+
+			resultsPurchaseReqnAcctAssgmt.push(purchaseReqnAcctAssgmt);
+
+			if (obj[i].rateio == "com_rateio") {
+				var quantityBy2 = parseFloat(obj[i].quantity);//.replace('.', '').replace(',', '.')) / 2;
+				resultsPurchaseReqnAcctAssgmt[0].MultipleAcctAssgmtDistrPercent = parseInt(obj[i].percent);
+				resultsPurchaseReqnAcctAssgmt[0].Quantity = quantityBy2;
+
+				purchaseReqnAcctAssgmt = {};
+				purchaseReqnAcctAssgmt.PurchaseRequisitionItem = itemNumber.toString();
+				purchaseReqnAcctAssgmt.PurchaseReqnAcctAssgmtNumber = "2";
+				purchaseReqnAcctAssgmt.CostCenter = obj[i].cost_center2 != "" ? obj[i].cost_center2.split('-')[0].trim() : obj[i].cost_center.split('-')[0].trim();
+				purchaseReqnAcctAssgmt.Quantity = quantityBy2;
+				purchaseReqnAcctAssgmt.BaseUnit = "EA";
+				purchaseReqnAcctAssgmt.BaseUnitISOCode = "EA";
+				purchaseReqnAcctAssgmt.GLAccount = obj[i].accounting_account2.split('-')[0].trim();
+				purchaseReqnAcctAssgmt.MasterFixedAsset = obj[i].cfi !== undefined ? obj[i].cfi : '';
+				purchaseReqnAcctAssgmt.MultipleAcctAssgmtDistrPercent = parseInt(obj[i].percent2);
+				resultsPurchaseReqnAcctAssgmt.push(purchaseReqnAcctAssgmt);
+			}
+
+			data._PurchaseReqnAcctAssgmt = resultsPurchaseReqnAcctAssgmt;
+			results.push(data);
+			itemNumber += 10;
+		}
+
+		return results;
+	},
+
+	_getMaterialDescription: function (sysId) {
+		var grMateriais = new GlideRecord('x_grul_csc_ultra_materiais');
+		if (grMateriais.get(sysId)) {
+			return grMateriais.getValue('descricao_do_material');
+		}
+	},
+
+	_parseMaterial: function (material) {
+		var numberDefault = "000000000000000000";
+		var materialLen = material.length;
+		var defaultLen = numberDefault.length;
+		return numberDefault.substring(0, defaultLen - materialLen) + material;
+	},
+
+	_parseItems: function (data) {
+		if (data.acquisition == 'material' || data.acquisition == 'nota_debito') {
+			return this._parseMateriaisItems(data);
+		} else {
+			return this._parseServicosItems(data);
+		}
+	},
+
+	_parseMateriaisItems: function (obj) {
+		var materiaisJson = JSON.parse(obj.materiais);
+		var materiaisList = [];
+
+		for (var i = 0; i < materiaisJson.length; i++) {
+			var data = {};
+			data.is_service = false;
+			data.description = materiaisJson[i].descricao_do_material_;
+			data.id_material_servico = materiaisJson[i].material_;
+			data.price = materiaisJson[i].valor_unitario_;
+			data.quantity = materiaisJson[i].quantidade_;
+			data.currency = materiaisJson[i].moeda;
+			data.delivery_place = materiaisJson[i].local_de_entrega;
+			data.total_price = materiaisJson[i].valor_total;
+			data.delivery_limit_date = materiaisJson[i].data_limite_da_entrega_do_material;
+			data.rateio = materiaisJson[i].com_rateio_ou_sem_rateio;
+			data.asset_or_expense = materiaisJson[i].ativo_capex_ou_despesa_opex;
+			data.accounting_account = materiaisJson[i].conta_contabil_material != undefined ? materiaisJson[i].conta_contabil_material : '';
+			data.accounting_account2 = materiaisJson[i].conta_contabil_material_2 != undefined ? materiaisJson[i].conta_contabil_material_2 : '';
+			data.percent = materiaisJson[i].porcentagem_do_valor;
+			data.percent2 = materiaisJson[i].porcentagem_do_valor_2;
+			data.cfi = materiaisJson[i].cfi_do_projeto;
+			data.cost_center = materiaisJson[i].centro_de_custo_material != undefined ? materiaisJson[i].centro_de_custo_material : "";
+			data.cost_center2 = materiaisJson[i].centro_de_custo_material_2 != undefined ? materiaisJson[i].centro_de_custo_material_2 : "";
+			data.gcm_code = materiaisJson[i].codigo_gcm;
+
+			var today = new GlideDateTime();
+			today.addDaysUTC(3);
+			data.delivery_date = today.getDisplayValue();
+
+			data.due_date = obj.dueDate;
+			data.start_date = obj.startDate;
+			data.supplier = obj.supplier;
+			data.vendor_contract_number = obj.vendorContractNumber;
+			data.contract_number = obj.contractNumber;
+			data.purchase_type = obj.purchaseType;
+			data.purchase_requisition = obj.purchaseRequisition;
+
+			today.addDaysUTC(-3);
+			data.today = today.getDisplayValue();
+
+			data.product_type = "1";
+			data.tax_code = "00";
+			data.em = false;
+			data.rev_fat_em = false;
+			data.condition_quantity = "1";
+
+			materiaisList.push(data);
+		}
+
+		return materiaisList;
+	},
+
+	_parseServicosItems: function (obj) {
+		var servicosJson = JSON.parse(obj.servicos);
+		var servicosList = [];
+
+		for (var i = 0; i < servicosJson.length; i++) {
+			var data = {};
+
+			/** Regra do 1000/1000 para Serviços
+			 * 
+			 * regra: o campo quantidade recebe o valor do serviço e o valor do serviço passa a ter o número 1000 fixado.
+			 *  
+			 */
+
+			// propriedade criada para que no payload seja aplicado o valor fixo "1000" em "PurReqnPriceQuantity"
+			data.is_service = true;
+			data.price = "1000";
+			// data.quantity = servicosJson[i].valor_unitario_servico;
+			data.quantity = servicosJson[i].valor_total_servico;//.replace('R$ ', '');
+			data.description = servicosJson[i].descricao_do_servico;
+			data.id_material_servico = servicosJson[i].servico;
+			data.currency = servicosJson[i].moeda_servico;
+			data.delivery_place = servicosJson[i].local_entrega_servico;
+			data.total_price = servicosJson[i].valor_total_servico;
+			data.delivery_limit_date = servicosJson[i].data_limite_entrega_servico;
+			data.rateio = servicosJson[i].com_rateio_ou_sem_rateio_servico;
+			data.asset_or_expense = servicosJson[i].ativo_capex_ou_despesa_opex_servico;
+			data.accounting_account = servicosJson[i].conta_contabil_material_servico != undefined ? servicosJson[i].conta_contabil_material_servico : '';
+			data.accounting_account2 = servicosJson[i].conta_contabil_material_servico2 != undefined ? servicosJson[i].conta_contabil_material_servico2 : '';
+			data.percent = servicosJson[i].porcentagem_do_valor_servico;
+			data.percent2 = servicosJson[i].porcentagem_do_valor_servico2;
+			data.cfi = servicosJson[i].cfi_do_projeto_servico;
+			data.cost_center = servicosJson[i].centro_de_custo_material_servico != undefined ? servicosJson[i].centro_de_custo_material_servico : "";
+			data.cost_center2 = servicosJson[i].centro_de_custo_material_servico_2 != undefined ? servicosJson[i].centro_de_custo_material_servico_2 : "";
+			data.gcm_code = servicosJson[i].codigo_gcm_servico;
+
+			var today = new GlideDateTime();
+			today.addDaysUTC(3);
+			data.delivery_date = today.getDisplayValue();
+
+			data.due_date = obj.dueDate;
+			data.start_date = obj.startDate;
+			data.supplier = obj.supplier;
+			data.vendor_contract_number = obj.vendorContractNumber;
+			data.contract_number = obj.contractNumber;
+			data.purchase_type = obj.purchaseType;
+			data.purchase_requisition = obj.purchaseRequisition + '';
+
+			today.addDaysUTC(-3);
+			data.today = today.getDisplayValue();
+
+			data.product_type = "2";
+			data.tax_code = "10";
+			data.em = true;
+			data.rev_fat_em = true;
+			data.condition_quantity = "1000";
+
+			servicosList.push(data);
+		}
+
+		return servicosList;
+	},
+
+	_getDate: function (dateTime) {
+		var splitDate = dateTime.toString().split(' ')[0].split('-');
+		var newDate = splitDate[2] + '-' + splitDate[1] + '-' + splitDate[0];
+		return newDate;
+	},
+
+	_getDateTimestamp: function (dateTime, transform) {
+		var date = dateTime;
+
+		if (transform == true) {
+			var splitDate = dateTime.toString().split(' ')[0].split('-');
+			var newDateTime = splitDate[2] + '-' + splitDate[1] + '-' + splitDate[0] + ' ' + dateTime.toString().split(' ')[1];
+			date = newDateTime;
+		}
+
+		var gdt = new GlideDateTime(date);
+		var timestamp = gdt.getNumericValue();
+
+		return timestamp.toString();
+	},
+
+	_getToken: function (restMessage, method) {
+		try {
+			var r = new sn_ws.RESTMessageV2(restMessage, method);
+
+			var response = r.execute();
+			var httpStatus = response.getStatusCode();
+
+			var token = response.getHeader('x-csrf-token');
+
+			var headers = response.getAllHeaders();
+			var cookieString = headers[1] + '';
+			var cookie = cookieString.split(':')[1];
+
+			gs.info('CSCUltra_SAPIntegration _getToken for ' + restMessage + ' - ' + method + ' (httpStatus): ' + httpStatus);
+			gs.info('CSCUltra_SAPIntegration _getToken for ' + restMessage + ' - ' + method + ' (cookie): ' + cookie);
+			gs.info('CSCUltra_SAPIntegration _getToken for ' + restMessage + ' - ' + method + ' (token): ' + token);
+
+			if (httpStatus == 200) {
+				return { 'token': token, 'cookie': cookie };
+			}
+
+		} catch (ex) {
+			var message = ex.message;
+			gs.info('CSCUltra_SAPIntegration _getToken method error: ' + message);
+		}
+	},
+
+	_sendDataToSAP: function (data) {
+		gs.info('CSCUltra_SAPIntegration _sendDataToSAP data: ' + JSON.stringify(data));
+		try {
+			var r = new sn_ws.RESTMessageV2(data.rest_name, data.rest_method);
+			r.setStringParameterNoEscape('body', JSON.stringify(data.body));
+			r.setRequestHeader('Cookie', data.cookie);
+			r.setRequestHeader('X-CSRF-Token', data.token);
+
+			var response = r.execute();
+			var responseBody = response.getBody();
+			var httpStatus = response.getStatusCode();
+
+			gs.info('CSCUltra_SAPIntegration _sendDataToSAP: (httpStatus) ' + httpStatus);
+			gs.info('CSCUltra_SAPIntegration _sendDataToSAP: (responseBody) ' + JSON.stringify(responseBody));
+
+			return { status: httpStatus, body: JSON.parse(responseBody) };
+
+		} catch (err) {
+			gs.info('CSCUltra_SAPIntegration _sendDataToSAP method error: ' + err.message);
+		}
+	},
+
+	type: 'CSCUltra_SAPIntegration'
+};
